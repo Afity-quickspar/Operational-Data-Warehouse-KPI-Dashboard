@@ -136,9 +136,34 @@ users keep generating events forever. Two design choices make 30-day retention a
 
 - **More volume:** raise `generation.customers` / `avg_orders_per_customer` in the
   config — the pipeline and tests scale unchanged.
-- **Real warehouse:** point `profiles.yml` at Snowflake/BigQuery; keep the models.
-- **Incremental models:** convert `fct_orders` to a dbt incremental materialization
-  keyed on `order_ts` for large-scale daily loads.
+- **Real warehouse:** copy a target from
+  [`profiles.cloud.example.yml`](../dbt/warehouse_dbt/profiles.cloud.example.yml)
+  into `profiles.yml`, set the matching vars from
+  [`.env.example`](../.env.example), and run `dbt build --target prod_snowflake`
+  (or `prod_bigquery`) — the models and tests are unchanged.
+- **Incremental models:** `fct_orders` is already a dbt incremental model
+  (`unique_key='order_id'`, `delete+insert`, filtered on `order_ts` past the max
+  already loaded) — the pattern to copy for other large, append-only facts.
+  Force a rebuild with `dbt run --full-refresh --select fct_orders`.
 - **Semantic layer:** add a dbt Semantic Layer / MetricFlow definition so the six
   KPIs are queryable as governed metrics.
 - **Alerting:** extend the orchestrator's run report to post failures to Slack/email.
+- **CI:** [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs the full
+  pipeline (generate → ingest → dbt build → freshness) on every push/PR, so a
+  broken model or a failing test is caught before merge, not on the next local run.
+
+### Orchestrator concurrency
+
+`src/orchestrate.py`'s `DAG.run()` executes tasks in **waves**: any task whose
+upstream has fully resolved runs immediately, and independent tasks within a
+wave run concurrently via a thread pool — real Airflow-style fan-out rather
+than one-task-at-a-time. In the current DAG this mostly doesn't change wall
+clock, because `dbt_test` and `dbt_source_freshness` are deliberately chained
+(`dbt_source_freshness` depends on `dbt_test`, not just `dbt_run`) rather than
+left to run in the same wave: DuckDB is a single-writer embedded engine, and
+two concurrent dbt invocations against the same `.duckdb` file both open a
+read-write connection and would race for the file lock (the `IO Error: File is
+already open` failure mode described below). The wave executor is written
+generically so a task set with genuinely independent, non-file-contending work
+(e.g. exporting to per-table files, or calling external APIs) gets real
+parallelism for free.

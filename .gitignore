@@ -31,3 +31,6 @@ data/logs/*.md
 Thumbs.db
 .vscode/
 .idea/
+
+# Local credentials (see .env.example)
+.env

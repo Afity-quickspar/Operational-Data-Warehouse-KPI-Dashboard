@@ -1,0 +1,38 @@
+# ============================================================================
+# Example cloud profile — NOT used by anything in this repo.
+# ============================================================================
+# Everything in dbt/warehouse_dbt/models/ is standard ANSI SQL + dbt, so
+# moving off DuckDB onto a real warehouse is a profile swap, not a model
+# rewrite. Copy the target you need into profiles.yml, set the matching
+# environment variables (see ../../.env.example), then run:
+#
+#   dbt build --profiles-dir . --target prod
+#
+# Credentials are pulled from the environment via env_var() — never commit
+# real values into profiles.yml.
+
+warehouse_dbt:
+  target: dev
+  outputs:
+
+    # --- Snowflake -------------------------------------------------------
+    prod_snowflake:
+      type: snowflake
+      account: "{{ env_var('SNOWFLAKE_ACCOUNT') }}"
+      user: "{{ env_var('SNOWFLAKE_USER') }}"
+      password: "{{ env_var('SNOWFLAKE_PASSWORD') }}"
+      role: "{{ env_var('SNOWFLAKE_ROLE') }}"
+      database: "{{ env_var('SNOWFLAKE_DATABASE') }}"
+      warehouse: "{{ env_var('SNOWFLAKE_WAREHOUSE') }}"
+      schema: marts
+      threads: 4
+
+    # --- BigQuery ----------------------------------------------------------
+    # Auth via a service-account key file path in GOOGLE_APPLICATION_CREDENTIALS.
+    prod_bigquery:
+      type: bigquery
+      method: service-account
+      project: "{{ env_var('BIGQUERY_PROJECT') }}"
+      dataset: marts
+      keyfile: "{{ env_var('GOOGLE_APPLICATION_CREDENTIALS') }}"
+      threads: 4

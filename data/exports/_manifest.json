@@ -1,5 +1,5 @@
 {
-  "generated_at_utc": "2026-08-24T20:44:03.926112+00:00",
+  "generated_at_utc": "2026-08-24T21:19:48.340252+00:00",
   "warehouse": "data/warehouse/warehouse.duckdb",
   "tables": {
     "dim_customers": {

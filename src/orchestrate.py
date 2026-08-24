@@ -37,6 +37,7 @@ Features
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import subprocess
 import sys
 import time
@@ -104,42 +105,62 @@ class DAG:
     def run(self) -> bool:
         order = self._topological_order()
         log.info(f"DAG '{self.name}' | {len(order)} tasks | order: {' -> '.join(order)}")
-        overall_ok = True
+        remaining = set(order)
 
-        for name in order:
-            task = self.tasks[name]
-            # Skip if any upstream failed
-            failed_up = [u for u in task.upstream if self.tasks[u].status in ("failed", "skipped")]
-            if failed_up:
-                task.status = "skipped"
-                task.detail = f"upstream failed: {', '.join(failed_up)}"
-                log.warning(f"[{name}] SKIPPED ({task.detail})")
-                overall_ok = False
-                continue
+        # Wave-based execution: within each wave, every task whose upstream
+        # has fully resolved (success/failed/skipped) runs concurrently. This
+        # is what gives the orchestrator real fan-out, mirroring Airflow's
+        # ability to run independent tasks in parallel instead of strictly
+        # one-at-a-time. Tasks that share a resource they can't contend for
+        # concurrently (e.g. two dbt invocations against the same DuckDB
+        # file, which is single-writer) are kept sequential via an explicit
+        # upstream edge in build_dag() rather than by accident of list order.
+        while remaining:
+            ready = [n for n in remaining
+                     if all(self.tasks[u].status not in ("pending", "running") for u in self.tasks[n].upstream)]
+            if not ready:
+                raise RuntimeError(f"DAG stalled - no ready tasks among {sorted(remaining)}")
 
-            for attempt in range(1, task.retries + 1):
-                task.attempts = attempt
-                task.status = "running"
-                log.info(f"[{name}] running (attempt {attempt}/{task.retries}) ...")
-                t0 = time.perf_counter()
-                try:
-                    task.fn()
-                    task.duration_sec = time.perf_counter() - t0
-                    task.status = "success"
-                    log.info(f"[{name}] SUCCESS in {task.duration_sec:0.2f}s")
-                    break
-                except Exception as exc:  # noqa: BLE001
-                    task.duration_sec = time.perf_counter() - t0
-                    task.detail = str(exc).splitlines()[0][:180]
-                    log.error(f"[{name}] FAILED (attempt {attempt}): {task.detail}")
-                    if attempt < task.retries:
-                        time.sleep(task.retry_backoff_sec)
-                    else:
-                        task.status = "failed"
-                        overall_ok = False
+            if len(ready) > 1:
+                log.info(f"Running wave in parallel: {', '.join(ready)}")
+            with concurrent.futures.ThreadPoolExecutor(max_workers=len(ready)) as pool:
+                list(pool.map(self._run_task, ready))
 
+            remaining -= set(ready)
+
+        overall_ok = all(t.status == "success" for t in self.tasks.values())
         self._publish_report()
         return overall_ok
+
+    def _run_task(self, name: str) -> None:
+        task = self.tasks[name]
+        # Skip if any upstream failed
+        failed_up = [u for u in task.upstream if self.tasks[u].status in ("failed", "skipped")]
+        if failed_up:
+            task.status = "skipped"
+            task.detail = f"upstream failed: {', '.join(failed_up)}"
+            log.warning(f"[{name}] SKIPPED ({task.detail})")
+            return
+
+        for attempt in range(1, task.retries + 1):
+            task.attempts = attempt
+            task.status = "running"
+            log.info(f"[{name}] running (attempt {attempt}/{task.retries}) ...")
+            t0 = time.perf_counter()
+            try:
+                task.fn()
+                task.duration_sec = time.perf_counter() - t0
+                task.status = "success"
+                log.info(f"[{name}] SUCCESS in {task.duration_sec:0.2f}s")
+                return
+            except Exception as exc:  # noqa: BLE001
+                task.duration_sec = time.perf_counter() - t0
+                task.detail = str(exc).splitlines()[0][:180]
+                log.error(f"[{name}] FAILED (attempt {attempt}): {task.detail}")
+                if attempt < task.retries:
+                    time.sleep(task.retry_backoff_sec)
+                else:
+                    task.status = "failed"
 
     def _publish_report(self) -> None:
         try:
@@ -256,8 +277,11 @@ def build_dag(skip_generate: bool, run_freshness: bool) -> DAG:
 
     export_up = ["dbt_test"]
     if run_freshness:
+        # Depends on dbt_test (not just dbt_run) so it never runs concurrently
+        # with dbt_test: DuckDB is a single-writer embedded engine, and both
+        # commands open a read-write connection to the same warehouse file.
         dag.add(Task("dbt_source_freshness", task_dbt_freshness,
-                     upstream=["dbt_run"], retries=1))
+                     upstream=["dbt_test"], retries=1))
         export_up.append("dbt_source_freshness")
 
     dag.add(Task("export_bi_extracts", task_export, upstream=export_up, retries=2))
