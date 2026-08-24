@@ -1,0 +1,74 @@
+version: 2
+
+# ============================================================================
+# STAGING MODEL CONTRACTS + DATA TESTS
+# ----------------------------------------------------------------------------
+# These generic tests enforce referential integrity, domain constraints and
+# non-null keys on every transformed staging model. They run under
+# `dbt test` (and `dbt build`) alongside the source freshness checks.
+# ============================================================================
+models:
+  - name: stg_customers
+    description: "Cleansed customer dimension."
+    columns:
+      - name: customer_id
+        tests: [unique, not_null]
+      - name: plan
+        tests:
+          - accepted_values:
+              values: ["Free", "Starter", "Pro", "Business", "Enterprise"]
+      - name: region
+        tests:
+          - accepted_values:
+              values: ["North America", "EMEA", "APAC", "LATAM"]
+      - name: segment_band
+        tests:
+          - accepted_values:
+              values: ["SMB", "Mid-Market", "Enterprise"]
+
+  - name: stg_orders
+    description: "Cleansed order fact with recognized-revenue flag."
+    columns:
+      - name: order_id
+        tests: [unique, not_null]
+      - name: customer_id
+        tests:
+          - not_null
+          - relationships:
+              to: ref('stg_customers')
+              field: customer_id
+      - name: status
+        tests:
+          - accepted_values:
+              values: ["completed", "refunded", "pending"]
+
+  - name: stg_subscriptions
+    description: "Cleansed subscription fact."
+    columns:
+      - name: subscription_id
+        tests: [unique, not_null]
+      - name: status
+        tests:
+          - accepted_values:
+              values: ["active", "churned", "paused"]
+
+  - name: stg_web_sessions
+    description: "Cleansed clickstream sessions."
+    columns:
+      - name: session_id
+        tests: [unique, not_null]
+      - name: converted
+        tests:
+          - accepted_values:
+              values: [0, 1]
+
+  - name: stg_events
+    description: "Cleansed product events."
+    columns:
+      - name: event_id
+        tests: [unique, not_null]
+      - name: event_type
+        tests:
+          - accepted_values:
+              values: ["page_view", "feature_used", "activation", "invite_sent",
+                       "support_ticket", "upgrade_clicked", "export_data", "api_call"]

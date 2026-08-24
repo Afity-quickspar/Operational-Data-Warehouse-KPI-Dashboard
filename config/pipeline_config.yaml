@@ -1,0 +1,81 @@
+# ============================================================================
+# Pipeline configuration — single source of truth for the daily "DAG"
+# Mirrors what an Airflow DAG-level config / Variables would hold.
+# ============================================================================
+
+project:
+  name: "Operational Data Warehouse & KPI Dashboard"
+  owner: "Analytics Engineering"
+  environment: "local-dev"          # local-dev | staging | prod
+  timezone: "UTC"
+
+# --- Warehouse (DuckDB replaces Snowflake) ----------------------------------
+warehouse:
+  engine: "duckdb"
+  database_path: "data/warehouse/warehouse.duckdb"
+  raw_schema: "raw"
+  staging_schema: "staging"
+  marts_schema: "marts"
+  threads: 4
+
+# --- Synthetic data volumes (drives the 100k+ row requirement) --------------
+# Row math (defaults): 8,000 customers + 68,000 orders + 240,000 events
+#                      + 8,000 subscriptions + 22,000 web sessions
+#                      + 6,500 marketing-spend rows  ≈ 352,500 rows.
+generation:
+  seed: 42
+  start_date: "2023-01-01"
+  end_date: "2025-08-24"
+  customers: 8000
+  avg_orders_per_customer: 14.0
+  events_per_customer: 30
+  web_sessions: 22000
+  marketing_channels: ["Paid Search", "Paid Social", "Organic", "Referral", "Email", "Affiliate", "Direct"]
+  plans: ["Free", "Starter", "Pro", "Business", "Enterprise"]
+  regions: ["North America", "EMEA", "APAC", "LATAM"]
+  currencies: ["USD"]
+
+# --- Ingestion --------------------------------------------------------------
+ingestion:
+  raw_dir: "data/raw"
+  # File formats intentionally mixed to demonstrate CSV + JSON staged ingestion
+  formats:
+    customers: "csv"
+    orders: "csv"
+    subscriptions: "csv"
+    events: "json"            # semi-structured JSON ingestion
+    web_sessions: "csv"
+    marketing_spend: "csv"
+
+# --- Data quality / freshness SLAs (enforced by dbt + orchestrator) ---------
+quality:
+  freshness_warn_hours: 36
+  freshness_error_hours: 72
+  max_null_rate_email: 0.02
+  min_rows_orders: 50000
+
+# --- Exports for Power BI ---------------------------------------------------
+exports:
+  dir: "data/exports"
+  format: "both"              # csv | parquet | both
+  tables:
+    - "dim_customers"
+    - "dim_date"
+    - "fct_orders"
+    - "fct_subscriptions"
+    - "kpi_daily"
+    - "kpi_monthly"
+    - "customer_segments"
+    - "cohort_retention"
+
+# --- KPI targets (used for Red/Amber/Green status in dashboards) ------------
+# Calibrated to the B2B-SaaS unit economics the pipeline produces
+# (blended CAC ~ $1.0-1.3k, LTV ~ $2.8k => LTV:CAC ~ 2.5-3.0x).
+kpi_targets:
+  gross_revenue_monthly: 500000     # monthly recognized-revenue goal
+  churn_rate_monthly_max: 0.055     # logo churn ceiling
+  cac_max: 1200                     # blended CAC ceiling
+  ltv_min: 2500                     # customer LTV floor
+  ltv_cac_ratio_min: 3.0            # healthy LTV:CAC target
+  conversion_rate_min: 0.045        # web -> signup conversion floor
+  retention_30d_min: 0.55           # 30-day (month-2) retention floor

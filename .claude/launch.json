@@ -1,0 +1,13 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "streamlit-dashboard",
+      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeArgs": ["-m", "streamlit", "run", "streamlit_app/app.py",
+                      "--server.port", "8533", "--server.headless", "true",
+                      "--browser.gatherUsageStats", "false"],
+      "port": 8533
+    }
+  ]
+}

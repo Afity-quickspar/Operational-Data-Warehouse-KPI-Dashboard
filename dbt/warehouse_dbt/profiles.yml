@@ -1,0 +1,15 @@
+# dbt connection profile for DuckDB.
+# The orchestrator invokes dbt with --profiles-dir pointing here, so the path
+# is resolved relative to the dbt project directory (dbt/warehouse_dbt/).
+warehouse_dbt:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: "../../data/warehouse/warehouse.duckdb"
+      threads: 4
+      # Keep the same file the Python ingestion/KPI layer uses so dbt reads the
+      # raw.* tables landed by src/ingest.py and writes marts back in place.
+      extensions:
+        - httpfs
+        - json

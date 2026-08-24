@@ -1,0 +1,32 @@
+name: "warehouse_dbt"
+version: "1.0.0"
+config-version: 2
+
+# This project transforms the raw landed data into a tested, documented
+# star schema + KPI marts inside DuckDB (our Snowflake-free warehouse).
+profile: "warehouse_dbt"
+
+model-paths: ["models"]
+seed-paths: ["seeds"]
+test-paths: ["tests"]
+macro-paths: ["macros"]
+
+target-path: "target"
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+models:
+  warehouse_dbt:
+    staging:
+      +materialized: view
+      +schema: staging
+    marts:
+      +materialized: table
+      +schema: marts
+
+# Surface the run-level metadata as columns for lineage/debugging.
+on-run-start:
+  - "{{ log('Starting dbt build for Operational Data Warehouse', info=true) }}"
+on-run-end:
+  - "{{ log('dbt build finished: ' ~ results | length ~ ' nodes', info=true) }}"

@@ -1,0 +1,80 @@
+version: 2
+
+# ============================================================================
+# MARTS CONTRACTS + DATA TESTS + DOCUMENTATION
+# ============================================================================
+models:
+  - name: dim_date
+    description: "Conformed calendar dimension covering the full data window."
+    columns:
+      - name: date_key
+        description: "Primary key: one row per calendar day."
+        tests: [unique, not_null]
+
+  - name: dim_customers
+    description: "Wide customer dimension with lifetime value and behaviour."
+    columns:
+      - name: customer_id
+        tests: [unique, not_null]
+      - name: lifetime_revenue
+        description: "Sum of recognized revenue across all completed orders."
+        tests: [not_null]
+
+  - name: fct_orders
+    description: "Order-grain fact enriched with conformed customer attributes."
+    columns:
+      - name: order_id
+        tests: [unique, not_null]
+      - name: customer_id
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_customers')
+              field: customer_id
+
+  - name: fct_subscriptions
+    description: "Subscription-grain fact with plan economics (MRR / ARR)."
+    columns:
+      - name: subscription_id
+        tests: [unique, not_null]
+
+  - name: kpi_daily
+    description: "Daily operational KPI grain (revenue, orders, conversion)."
+    columns:
+      - name: date_key
+        tests: [unique, not_null]
+      - name: conversion_rate
+        tests: [not_null]
+
+  - name: kpi_monthly
+    description: "Executive KPI mart: all six headline KPIs by month."
+    columns:
+      - name: month
+        tests: [unique, not_null]
+      - name: churn_rate
+        description: "Churned subscriptions / active subscriptions at month start."
+        tests: [not_null]
+      - name: cac
+        description: "Marketing spend / new customers acquired in the month."
+      - name: ltv
+        description: "ARPA / churn rate (customer lifetime value)."
+      - name: retention_30d
+        description: "Cohort-anchored share retained past 30 days."
+        tests: [not_null]
+
+  - name: customer_segments
+    description: >
+      RFM value segmentation. The High-Value tier (top revenue deciles)
+      concentrates a disproportionate share of revenue - the flagship insight.
+    columns:
+      - name: customer_id
+        tests: [unique, not_null]
+      - name: value_tier
+        tests:
+          - accepted_values:
+              values: ["High-Value", "Core", "Occasional", "Dormant"]
+      - name: revenue_share
+        tests: [not_null]
+
+  - name: cohort_retention
+    description: "Monthly signup cohorts by months-since-signup retention rate."

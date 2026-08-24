@@ -1,0 +1,172 @@
+// ============================================================================
+//  POWER BI — DAX MEASURE LIBRARY
+//  Operational Data Warehouse & KPI Dashboard
+// ----------------------------------------------------------------------------
+//  Paste these into Power BI Desktop (Modeling ▸ New measure) after importing
+//  the extracts from data/exports/. They implement the six headline KPIs plus
+//  supporting measures and are written to work against BOTH the pre-aggregated
+//  kpi_monthly mart AND the granular fct_orders / customer_segments tables.
+//
+//  Model note: build measures on a dedicated "_Measures" table (Home ▸ Enter
+//  Data ▸ empty table named _Measures) so they group cleanly in the field list.
+// ============================================================================
+
+
+// ─────────────────────────────────────────────────────────────────────────
+// 1. REVENUE
+// ─────────────────────────────────────────────────────────────────────────
+Recognized Revenue =
+    SUM ( fct_orders[recognized_revenue] )
+
+Recognized Revenue (PM) =
+    CALCULATE ( [Recognized Revenue], DATEADD ( dim_date[date_key], -1, MONTH ) )
+
+Revenue MoM % =
+    DIVIDE ( [Recognized Revenue] - [Recognized Revenue (PM)], [Recognized Revenue (PM)] )
+
+Revenue YTD =
+    TOTALYTD ( [Recognized Revenue], dim_date[date_key] )
+
+Avg Order Value =
+    DIVIDE (
+        [Recognized Revenue],
+        CALCULATE ( DISTINCTCOUNT ( fct_orders[order_id] ),
+                    fct_orders[is_recognized] = TRUE () )
+    )
+
+Refund Rate =
+    DIVIDE (
+        CALCULATE ( COUNTROWS ( fct_orders ), fct_orders[status] = "refunded" ),
+        COUNTROWS ( fct_orders )
+    )
+
+
+// ─────────────────────────────────────────────────────────────────────────
+// 2. CHURN   (sourced from the pre-computed monthly mart)
+// ─────────────────────────────────────────────────────────────────────────
+Churn Rate =
+    AVERAGE ( kpi_monthly[churn_rate] )
+
+Churned Customers =
+    SUM ( kpi_monthly[churned_customers] )
+
+Churn vs Target =
+    VAR Target = 0.055
+    RETURN [Churn Rate] - Target
+
+
+// ─────────────────────────────────────────────────────────────────────────
+// 3. CAC — Customer Acquisition Cost
+// ─────────────────────────────────────────────────────────────────────────
+Marketing Spend =
+    SUM ( kpi_monthly[marketing_spend] )
+
+New Customers =
+    SUM ( kpi_monthly[new_customers] )
+
+CAC =
+    DIVIDE ( [Marketing Spend], [New Customers] )
+
+
+// ─────────────────────────────────────────────────────────────────────────
+// 4. LTV — Lifetime Value  &  the LTV:CAC efficiency ratio
+// ─────────────────────────────────────────────────────────────────────────
+LTV =
+    AVERAGEX ( VALUES ( kpi_monthly[month] ), kpi_monthly[ltv] )
+
+LTV to CAC Ratio =
+    DIVIDE ( [LTV], [CAC] )
+
+LTV CAC Status =                      // RAG helper for conditional formatting
+    VAR r = [LTV to CAC Ratio]
+    RETURN SWITCH ( TRUE (),
+        r >= 3, "🟢 Healthy",
+        r >= 2, "🟡 Watch",
+        "🔴 Unhealthy" )
+
+
+// ─────────────────────────────────────────────────────────────────────────
+// 5. CONVERSION — web session → signup
+// ─────────────────────────────────────────────────────────────────────────
+Sessions =
+    SUM ( kpi_monthly[sessions] )
+
+Conversions =
+    SUM ( kpi_monthly[conversions] )
+
+Conversion Rate =
+    DIVIDE ( [Conversions], [Sessions] )
+
+
+// ─────────────────────────────────────────────────────────────────────────
+// 6. 30-DAY RETENTION   (last matured cohort only)
+// ─────────────────────────────────────────────────────────────────────────
+Retention 30d =
+    CALCULATE (
+        AVERAGE ( kpi_monthly[retention_30d] ),
+        kpi_monthly[cohort_is_mature] = TRUE ()
+    )
+
+Retention 30d (Latest) =
+    VAR LastMature =
+        CALCULATE ( MAX ( kpi_monthly[month] ),
+                    kpi_monthly[cohort_is_mature] = TRUE () )
+    RETURN
+        CALCULATE ( AVERAGE ( kpi_monthly[retention_30d] ),
+                    kpi_monthly[month] = LastMature )
+
+
+// ─────────────────────────────────────────────────────────────────────────
+// MRR / ARR  (subscription economics)
+// ─────────────────────────────────────────────────────────────────────────
+Active MRR =
+    CALCULATE ( SUM ( fct_subscriptions[mrr] ),
+                fct_subscriptions[is_active] = TRUE () )
+
+Active ARR =
+    [Active MRR] * 12
+
+Active Customers =
+    CALCULATE ( DISTINCTCOUNT ( fct_subscriptions[customer_id] ),
+                fct_subscriptions[is_active] = TRUE () )
+
+ARPA =
+    DIVIDE ( [Recognized Revenue], [Active Customers] )
+
+
+// ─────────────────────────────────────────────────────────────────────────
+// FLAGSHIP — priority-segment revenue concentration ("12% → 38%")
+// ─────────────────────────────────────────────────────────────────────────
+Priority Revenue =
+    CALCULATE ( SUM ( customer_segments[lifetime_revenue] ),
+                customer_segments[priority_segment] = 1 )
+
+Total Segment Revenue =
+    SUM ( customer_segments[lifetime_revenue] )
+
+Priority Revenue Share =
+    DIVIDE ( [Priority Revenue], [Total Segment Revenue] )
+
+Priority Customer Share =
+    DIVIDE (
+        CALCULATE ( COUNTROWS ( customer_segments ),
+                    customer_segments[priority_segment] = 1 ),
+        COUNTROWS ( customer_segments )
+    )
+
+Priority Concentration Label =
+    FORMAT ( [Priority Customer Share], "0%" ) & " of customers → "
+    & FORMAT ( [Priority Revenue Share], "0%" ) & " of revenue"
+
+
+// ─────────────────────────────────────────────────────────────────────────
+// TARGET / RAG measures (drive KPI-card conditional formatting)
+// ─────────────────────────────────────────────────────────────────────────
+Revenue Target = 500000
+Revenue vs Target % = DIVIDE ( [Recognized Revenue] - [Revenue Target], [Revenue Target] )
+
+Revenue RAG =
+    SWITCH ( TRUE (),
+        [Recognized Revenue] >= [Revenue Target], "On Target",
+        [Recognized Revenue] >= 0.9 * [Revenue Target], "Watch",
+        "Off Target" )

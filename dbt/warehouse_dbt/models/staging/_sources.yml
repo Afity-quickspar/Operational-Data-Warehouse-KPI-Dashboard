@@ -1,0 +1,52 @@
+version: 2
+
+# ============================================================================
+# SOURCES + FRESHNESS SLAs
+# ----------------------------------------------------------------------------
+# Freshness is anchored on the `_ingested_at` audit column stamped at load
+# time. `dbt source freshness` will WARN after 36h and ERROR after 72h,
+# matching the SLA declared in config/pipeline_config.yaml.
+# ============================================================================
+sources:
+  - name: raw
+    description: "Landed raw source-system extracts (CSV/JSON), 1:1 with files."
+    schema: raw
+    loaded_at_field: _ingested_at
+    freshness:
+      warn_after: {count: 36, period: hour}
+      error_after: {count: 72, period: hour}
+    tables:
+      - name: customers
+        description: "CRM customer master. One row per customer."
+        columns:
+          - name: customer_id
+            description: "Surrogate customer key."
+            tests: [unique, not_null]
+      - name: orders
+        description: "Transactional order lines from the billing system."
+        columns:
+          - name: order_id
+            tests: [unique, not_null]
+          - name: customer_id
+            tests:
+              - not_null
+              - relationships:
+                  to: source('raw', 'customers')
+                  field: customer_id
+      - name: subscriptions
+        description: "Recurring subscription records with MRR and churn state."
+        columns:
+          - name: subscription_id
+            tests: [unique, not_null]
+      - name: web_sessions
+        description: "Clickstream sessions used for conversion analysis."
+        columns:
+          - name: session_id
+            tests: [unique, not_null]
+      - name: marketing_spend
+        description: "Monthly paid-media spend by channel and region (CAC input)."
+      - name: events
+        description: "Product analytics events (flattened from JSON)."
+        columns:
+          - name: event_id
+            tests: [unique, not_null]

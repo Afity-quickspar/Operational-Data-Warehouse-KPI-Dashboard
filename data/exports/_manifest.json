@@ -1,0 +1,30 @@
+{
+  "generated_at_utc": "2026-08-24T20:44:03.926112+00:00",
+  "warehouse": "data/warehouse/warehouse.duckdb",
+  "tables": {
+    "dim_customers": {
+      "rows": 8000
+    },
+    "dim_date": {
+      "rows": 966
+    },
+    "fct_orders": {
+      "rows": 62642
+    },
+    "fct_subscriptions": {
+      "rows": 8000
+    },
+    "kpi_daily": {
+      "rows": 966
+    },
+    "kpi_monthly": {
+      "rows": 32
+    },
+    "customer_segments": {
+      "rows": 8000
+    },
+    "cohort_retention": {
+      "rows": 338
+    }
+  }
+}
