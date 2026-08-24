@@ -7,6 +7,10 @@ warehouse marts. Six executive KPIs, revenue & growth, the flagship customer-
 segmentation story, retention cohorts, acquisition economics, and a no-code
 self-serve explorer with a read-only SQL runner.
 
+Presentation is a cinematic, animated skin (see ui.py) layered on top of the
+same computations the original static dashboard used — nothing about the
+KPI math changes based on how it's drawn.
+
 Run:  streamlit run streamlit_app/app.py
 """
 from __future__ import annotations
@@ -18,6 +22,22 @@ import plotly.graph_objects as go
 import streamlit as st
 
 import data_access as da
+from ui import (
+    AMBER,
+    GREEN,
+    PRIMARY,
+    RED,
+    big_insight,
+    calc_delta,
+    fmt_money,
+    goodness_frac,
+    inject_base_theme,
+    kpi_row,
+    live_pill,
+    section_header,
+    status_of,
+    ticker,
+)
 
 # ---------------------------------------------------------------------------
 # Page config + theme
@@ -29,36 +49,10 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-PRIMARY = "#2563eb"
-GREEN = "#16a34a"
-AMBER = "#d97706"
-RED = "#dc2626"
 SLATE = "#334155"
-PALETTE = ["#2563eb", "#7c3aed", "#0891b2", "#16a34a", "#d97706", "#dc2626", "#db2777"]
+PALETTE = [PRIMARY, "#7c3aed", "#0891b2", GREEN, AMBER, RED, "#db2777"]
 
-st.markdown(
-    """
-    <style>
-      .main {background-color: #0e1117;}
-      .kpi-card {
-        background: linear-gradient(145deg, #1c2333 0%, #161b28 100%);
-        border: 1px solid #263143; border-radius: 14px; padding: 18px 20px;
-        box-shadow: 0 2px 10px rgba(0,0,0,0.25);
-      }
-      .kpi-label {font-size: 0.80rem; letter-spacing: .04em; color:#94a3b8;
-                  text-transform: uppercase; margin-bottom: 4px;}
-      .kpi-value {font-size: 1.85rem; font-weight: 700; color:#f1f5f9; line-height:1.1;}
-      .kpi-sub {font-size: 0.82rem; margin-top:6px;}
-      .pill {display:inline-block; padding:2px 10px; border-radius:999px;
-             font-size:0.72rem; font-weight:600;}
-      .big-insight {background:linear-gradient(145deg,#132a1e,#0f2018);
-             border:1px solid #1f6f43; border-radius:14px; padding:18px 22px;}
-      .section-note {color:#94a3b8; font-size:0.9rem;}
-      h1,h2,h3 {color:#e2e8f0;}
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+inject_base_theme()
 
 # ---------------------------------------------------------------------------
 # Guard: warehouse must exist
@@ -83,8 +77,7 @@ with st.sidebar:
         "SELECT count(*) AS n FROM main_marts.fct_orders").iloc[0]["n"]
     max_d = opts["max_date"]
     st.markdown(
-        f"<span class='pill' style='background:#14532d;color:#86efac;'>● Warehouse fresh</span>"
-        f"<br><span class='section-note'>Latest order date: <b>{max_d}</b> · "
+        f"{live_pill()}<br><span class='section-note'>Latest order date: <b>{max_d}</b> · "
         f"{int(manifest_rows):,} orders modelled</span>",
         unsafe_allow_html=True,
     )
@@ -150,26 +143,41 @@ def filtered_segments() -> pd.DataFrame:
     return df.loc[m]
 
 
-def fmt_money(x: float) -> str:
-    if abs(x) >= 1_000_000:
-        return f"${x/1_000_000:.2f}M"
-    if abs(x) >= 1_000:
-        return f"${x/1_000:.1f}K"
-    return f"${x:,.0f}"
+# ---------------------------------------------------------------------------
+# Live ticker — the "moving taskbar", visible on every page
+# ---------------------------------------------------------------------------
+_tk_km = da.kpi_monthly().copy()
+_tk_km["month"] = pd.to_datetime(_tk_km["month"])
+_tk_max_order = pd.to_datetime(
+    da.q("SELECT max(order_date) AS d FROM main_marts.fct_orders").iloc[0]["d"])
+_tk_partial = _tk_max_order.to_period("M").to_timestamp()
+_tk_complete = _tk_km[_tk_km["month"] < _tk_partial]
+_tk_cur, _tk_prev = _tk_complete.iloc[-1], _tk_complete.iloc[-2]
+_tk_mature = _tk_km[_tk_km["cohort_is_mature"] == True]  # noqa: E712
+_tk_ret = _tk_mature.iloc[-1] if len(_tk_mature) else _tk_cur
+_tk_seg = da.customer_segments()
+_tk_p_users = _tk_seg["priority_customer_share"].max() * 100
+_tk_p_rev = _tk_seg["priority_revenue_share"].max() * 100
+_tk_ratio = _tk_cur["ltv"] / _tk_cur["cac"] if _tk_cur["cac"] else 0
 
-
-def rag_pill(ok: bool, warn: bool = False) -> str:
-    if ok:
-        return f"<span class='pill' style='background:#14532d;color:#86efac;'>ON TARGET</span>"
-    if warn:
-        return f"<span class='pill' style='background:#422006;color:#fcd34d;'>WATCH</span>"
-    return f"<span class='pill' style='background:#450a0a;color:#fca5a5;'>OFF TARGET</span>"
-
-
-def kpi_card(label: str, value: str, sub_html: str = "") -> str:
-    return (f"<div class='kpi-card'><div class='kpi-label'>{label}</div>"
-            f"<div class='kpi-value'>{value}</div>"
-            f"<div class='kpi-sub'>{sub_html}</div></div>")
+ticker([
+    ("Reporting month", _tk_cur["month_label"], "#94a3b8"),
+    ("Revenue", fmt_money(_tk_cur["recognized_revenue"]),
+     GREEN if _tk_cur["recognized_revenue"] >= targets["gross_revenue_monthly"] else AMBER),
+    ("Churn", f"{_tk_cur['churn_rate']*100:.2f}%",
+     GREEN if _tk_cur["churn_rate"] <= targets["churn_rate_monthly_max"] else RED),
+    ("CAC", fmt_money(_tk_cur["cac"]),
+     GREEN if _tk_cur["cac"] <= targets["cac_max"] else RED),
+    ("LTV", fmt_money(_tk_cur["ltv"]),
+     GREEN if _tk_cur["ltv"] >= targets["ltv_min"] else AMBER),
+    ("LTV : CAC", f"{_tk_ratio:.1f}×",
+     GREEN if _tk_ratio >= targets["ltv_cac_ratio_min"] else AMBER),
+    ("Conversion", f"{_tk_cur['conversion_rate']*100:.2f}%",
+     GREEN if _tk_cur["conversion_rate"] >= targets["conversion_rate_min"] else AMBER),
+    ("30D Retention", f"{_tk_ret['retention_30d']*100:.1f}%",
+     GREEN if _tk_ret["retention_30d"] >= targets["retention_30d_min"] else AMBER),
+    ("Priority segment", f"{_tk_p_users:.0f}% → {_tk_p_rev:.0f}% of revenue", PRIMARY),
+])
 
 
 # ===========================================================================
@@ -197,83 +205,62 @@ if page == "Executive Overview":
     mature = km[km["cohort_is_mature"] == True]  # noqa: E712
     ret_row = mature.iloc[-1] if len(mature) else cur
 
-    def delta_html(curv, prevv, higher_better=True, pct=False, money=False):
-        if prevv in (0, None) or pd.isna(prevv):
-            return ""
-        change = (curv - prevv) / abs(prevv)
-        up = curv >= prevv
-        good = up if higher_better else not up
-        color = GREEN if good else RED
-        arrow = "▲" if up else "▼"
-        return (f"<span style='color:{color};'>{arrow} {abs(change)*100:.1f}% MoM</span>")
-
-    c1, c2, c3 = st.columns(3)
     rev_ok = cur["recognized_revenue"] >= targets["gross_revenue_monthly"]
-    c1.markdown(kpi_card(
-        "Recognized Revenue",
-        fmt_money(cur["recognized_revenue"]),
-        f"{delta_html(cur['recognized_revenue'], prev['recognized_revenue'])} &nbsp; "
-        f"{rag_pill(rev_ok, warn=not rev_ok and cur['recognized_revenue']>=0.9*targets['gross_revenue_monthly'])}"
-        f"<br><span class='section-note'>Target {fmt_money(targets['gross_revenue_monthly'])}/mo</span>"),
-        unsafe_allow_html=True)
-
     churn_ok = cur["churn_rate"] <= targets["churn_rate_monthly_max"]
-    c2.markdown(kpi_card(
-        "Logo Churn (monthly)",
-        f"{cur['churn_rate']*100:.2f}%",
-        f"{delta_html(cur['churn_rate'], prev['churn_rate'], higher_better=False)} &nbsp; "
-        f"{rag_pill(churn_ok)}"
-        f"<br><span class='section-note'>Ceiling {targets['churn_rate_monthly_max']*100:.1f}%</span>"),
-        unsafe_allow_html=True)
-
     cac_ok = cur["cac"] <= targets["cac_max"]
-    c3.markdown(kpi_card(
-        "CAC (blended)",
-        fmt_money(cur["cac"]),
-        f"{delta_html(cur['cac'], prev['cac'], higher_better=False)} &nbsp; "
-        f"{rag_pill(cac_ok)}"
-        f"<br><span class='section-note'>Ceiling {fmt_money(targets['cac_max'])}</span>"),
-        unsafe_allow_html=True)
-
-    c4, c5, c6 = st.columns(3)
-    ltv_ok = cur["ltv"] >= targets["ltv_min"]
-    ratio = cur["ltv"] / cur["cac"] if cur["cac"] else 0
-    c4.markdown(kpi_card(
-        "Customer LTV",
-        fmt_money(cur["ltv"]),
-        f"LTV:CAC <b>{ratio:.1f}×</b> &nbsp; {rag_pill(ratio >= targets['ltv_cac_ratio_min'], warn=ratio>=2)}"
-        f"<br><span class='section-note'>Floor {fmt_money(targets['ltv_min'])} · target ratio ≥ {targets['ltv_cac_ratio_min']}×</span>"),
-        unsafe_allow_html=True)
-
     conv_ok = cur["conversion_rate"] >= targets["conversion_rate_min"]
-    c5.markdown(kpi_card(
-        "Web→Signup Conversion",
-        f"{cur['conversion_rate']*100:.2f}%",
-        f"{delta_html(cur['conversion_rate'], prev['conversion_rate'])} &nbsp; {rag_pill(conv_ok)}"
-        f"<br><span class='section-note'>Floor {targets['conversion_rate_min']*100:.1f}%</span>"),
-        unsafe_allow_html=True)
-
     ret_ok = ret_row["retention_30d"] >= targets["retention_30d_min"]
-    c6.markdown(kpi_card(
-        "30-Day Retention",
-        f"{ret_row['retention_30d']*100:.1f}%",
-        f"cohort {ret_row['month_label']} &nbsp; {rag_pill(ret_ok, warn=ret_row['retention_30d']>=0.5)}"
-        f"<br><span class='section-note'>Floor {targets['retention_30d_min']*100:.0f}% (last matured cohort)</span>"),
-        unsafe_allow_html=True)
+    ratio = cur["ltv"] / cur["cac"] if cur["cac"] else 0
+
+    rev_delta = calc_delta(cur["recognized_revenue"], prev["recognized_revenue"])
+    churn_delta = calc_delta(cur["churn_rate"], prev["churn_rate"])
+    cac_delta = calc_delta(cur["cac"], prev["cac"])
+    conv_delta = calc_delta(cur["conversion_rate"], prev["conversion_rate"])
+
+    kpi_row([
+        dict(label="Recognized Revenue", value=float(cur["recognized_revenue"]), kind="money",
+             delta_pct=rev_delta, delta_good=(rev_delta or 0) >= 0,
+             status=status_of(rev_ok, warn=cur["recognized_revenue"] >= 0.9 * targets["gross_revenue_monthly"]),
+             caption=f"Target {fmt_money(targets['gross_revenue_monthly'])}/mo",
+             progress=goodness_frac(cur["recognized_revenue"], targets["gross_revenue_monthly"], True)),
+        dict(label="Logo Churn (monthly)", value=float(cur["churn_rate"]), kind="percent", decimals=2,
+             delta_pct=churn_delta, delta_good=(churn_delta or 0) <= 0,
+             status=status_of(churn_ok),
+             caption=f"Ceiling {targets['churn_rate_monthly_max']*100:.1f}%",
+             progress=goodness_frac(cur["churn_rate"], targets["churn_rate_monthly_max"], False)),
+        dict(label="CAC (blended)", value=float(cur["cac"]), kind="money",
+             delta_pct=cac_delta, delta_good=(cac_delta or 0) <= 0,
+             status=status_of(cac_ok),
+             caption=f"Ceiling {fmt_money(targets['cac_max'])}",
+             progress=goodness_frac(cur["cac"], targets["cac_max"], False)),
+        dict(label="Customer LTV", value=float(cur["ltv"]), kind="money",
+             status=status_of(ratio >= targets["ltv_cac_ratio_min"], warn=ratio >= 2),
+             caption=f"LTV:CAC {ratio:.1f}× · floor {fmt_money(targets['ltv_min'])}",
+             progress=goodness_frac(ratio, targets["ltv_cac_ratio_min"], True)),
+        dict(label="Web→Signup Conversion", value=float(cur["conversion_rate"]), kind="percent", decimals=2,
+             delta_pct=conv_delta, delta_good=(conv_delta or 0) >= 0,
+             status=status_of(conv_ok),
+             caption=f"Floor {targets['conversion_rate_min']*100:.1f}%",
+             progress=goodness_frac(cur["conversion_rate"], targets["conversion_rate_min"], True)),
+        dict(label="30-Day Retention", value=float(ret_row["retention_30d"]), kind="percent", decimals=1,
+             status=status_of(ret_ok, warn=ret_row["retention_30d"] >= 0.5),
+             caption=f"Cohort {ret_row['month_label']} · floor {targets['retention_30d_min']*100:.0f}%",
+             progress=goodness_frac(ret_row["retention_30d"], targets["retention_30d_min"], True)),
+    ], cols=3)
 
     st.markdown("")
     # Flagship insight banner
     seg = da.customer_segments()
     p_users = seg["priority_customer_share"].max() * 100
     p_rev = seg["priority_revenue_share"].max() * 100
-    st.markdown(
-        f"<div class='big-insight'>💡 <b>Flagship insight —</b> the high-value priority "
-        f"segment is just <b>{p_users:.0f}%</b> of customers but drives "
-        f"<b>{p_rev:.0f}%</b> of all recognized revenue. Concentrating retention and "
-        f"expansion motions on this cohort is the single highest-leverage play.</div>",
-        unsafe_allow_html=True)
+    big_insight(
+        f"💡 <b>Flagship insight —</b> the high-value priority segment is just "
+        f"<b>{p_users:.0f}%</b> of customers but drives <b>{p_rev:.0f}%</b> of all "
+        f"recognized revenue. Concentrating retention and expansion motions on this "
+        f"cohort is the single highest-leverage play."
+    )
 
-    st.markdown("### Revenue & customer trend")
+    section_header("Revenue & customer trend")
     left, right = st.columns([3, 2])
     with left:
         fig = go.Figure()
@@ -296,7 +283,7 @@ if page == "Executive Overview":
                            paper_bgcolor="rgba(0,0,0,0)")
         st.plotly_chart(fig2, use_container_width=True)
 
-    st.markdown("### KPI scorecard (last 12 months)")
+    section_header("KPI scorecard (last 12 months)")
     scorecard = km.tail(12)[[
         "month_label", "recognized_revenue", "active_customers", "churn_rate",
         "cac", "ltv", "conversion_rate", "retention_30d"]].copy()
@@ -321,19 +308,18 @@ elif page == "Revenue & Growth":
     aov = completed["net_amount"].mean() if n_orders else 0
     refund_rate = (orders["status"].eq("refunded").sum() / len(orders)) if len(orders) else 0
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.markdown(kpi_card("Recognized Revenue", fmt_money(total_rev),
-                         f"<span class='section-note'>{len(sel_regions)} regions · "
-                         f"{len(sel_plans)} plans</span>"), unsafe_allow_html=True)
-    c2.markdown(kpi_card("Completed Orders", f"{n_orders:,}",
-                         "<span class='section-note'>within filters</span>"), unsafe_allow_html=True)
-    c3.markdown(kpi_card("Avg Order Value", fmt_money(aov),
-                         "<span class='section-note'>net of discounts</span>"), unsafe_allow_html=True)
-    c4.markdown(kpi_card("Refund Rate", f"{refund_rate*100:.1f}%",
-                         "<span class='section-note'>refunded / all orders</span>"),
-                unsafe_allow_html=True)
+    kpi_row([
+        dict(label="Recognized Revenue", value=float(total_rev), kind="money",
+             caption=f"{len(sel_regions)} regions · {len(sel_plans)} plans"),
+        dict(label="Completed Orders", value=float(n_orders), kind="int",
+             caption="within filters"),
+        dict(label="Avg Order Value", value=float(aov), kind="money",
+             caption="net of discounts"),
+        dict(label="Refund Rate", value=float(refund_rate), kind="percent", decimals=1,
+             caption="refunded / all orders"),
+    ], cols=4)
 
-    st.markdown("### Monthly recognized revenue")
+    section_header("Monthly recognized revenue")
     by_month = (completed.groupby("order_month")["recognized_revenue"]
                 .sum().reset_index())
     fig = px.bar(by_month, x="order_month", y="recognized_revenue",
@@ -386,12 +372,12 @@ elif page == "Customer Segments":
 
     p_users = all_seg["priority_customer_share"].max() * 100
     p_rev = all_seg["priority_revenue_share"].max() * 100
-    st.markdown(
-        f"<div class='big-insight'>💡 <b>{p_users:.0f}% of customers → {p_rev:.0f}% of revenue.</b> "
+    big_insight(
+        f"💡 <b>{p_users:.0f}% of customers → {p_rev:.0f}% of revenue.</b> "
         f"The priority segment is defined once in the warehouse "
         f"(<code>customer_segments.priority_segment</code>) and flows to every tool — "
-        f"the single source of truth behind the targeted retention strategy.</div>",
-        unsafe_allow_html=True)
+        f"the single source of truth behind the targeted retention strategy."
+    )
 
     # Tier concentration
     tier = (all_seg.groupby("value_tier")
@@ -471,20 +457,19 @@ elif page == "Retention & Cohorts":
 
     mature = km[km["cohort_is_mature"] == True]  # noqa: E712
     avg_ret = mature["retention_30d"].mean() if len(mature) else 0
-    c1, c2, c3 = st.columns(3)
-    c1.markdown(kpi_card("Avg 30-Day Retention", f"{avg_ret*100:.1f}%",
-                         "<span class='section-note'>matured cohorts</span>"),
-                unsafe_allow_html=True)
-    c2.markdown(kpi_card("Avg Monthly Churn", f"{km['churn_rate'].mean()*100:.2f}%",
-                         "<span class='section-note'>trailing average</span>"),
-                unsafe_allow_html=True)
     subs = da.fct_subscriptions()
     active_share = subs["is_active"].mean()
-    c3.markdown(kpi_card("Active Subscriptions", f"{active_share*100:.0f}%",
-                         "<span class='section-note'>of all subscriptions</span>"),
-                unsafe_allow_html=True)
 
-    st.markdown("### Cohort retention heatmap")
+    kpi_row([
+        dict(label="Avg 30-Day Retention", value=float(avg_ret), kind="percent", decimals=1,
+             caption="matured cohorts"),
+        dict(label="Avg Monthly Churn", value=float(km["churn_rate"].mean()), kind="percent", decimals=2,
+             caption="trailing average"),
+        dict(label="Active Subscriptions", value=float(active_share), kind="percent", decimals=0,
+             caption="of all subscriptions"),
+    ], cols=3)
+
+    section_header("Cohort retention heatmap")
     st.caption("Rows = signup cohort · columns = months since signup · "
                "value = share of the cohort still active (product events).")
     piv = coh.pivot(index="cohort_label", columns="months_since_signup",
@@ -532,19 +517,19 @@ elif page == "Acquisition & Conversion":
     """)
     sessions["conv_rate"] = sessions["conversions"] / sessions["sessions"]
 
-    c1, c2, c3 = st.columns(3)
     tot_sessions = sessions["sessions"].sum()
     tot_conv = sessions["conversions"].sum()
-    c1.markdown(kpi_card("Web Sessions", f"{tot_sessions:,.0f}",
-                         "<span class='section-note'>all channels</span>"), unsafe_allow_html=True)
-    c2.markdown(kpi_card("Conversions", f"{tot_conv:,.0f}",
-                         f"<span class='section-note'>{tot_conv/tot_sessions*100:.1f}% blended</span>"),
-                unsafe_allow_html=True)
-    c3.markdown(kpi_card("Avg CAC", fmt_money(km["cac"].replace(0, np.nan).mean()),
-                         "<span class='section-note'>blended trailing</span>"),
-                unsafe_allow_html=True)
 
-    st.markdown("### Acquisition funnel")
+    kpi_row([
+        dict(label="Web Sessions", value=float(tot_sessions), kind="int",
+             caption="all channels"),
+        dict(label="Conversions", value=float(tot_conv), kind="int",
+             caption=f"{tot_conv/tot_sessions*100:.1f}% blended"),
+        dict(label="Avg CAC", value=float(km["cac"].replace(0, np.nan).mean()), kind="money",
+             caption="blended trailing"),
+    ], cols=3)
+
+    section_header("Acquisition funnel")
     tot_pv = int(da.q("SELECT sum(pages_viewed) s FROM main_staging.stg_web_sessions").iloc[0]["s"])
     funnel = pd.DataFrame({
         "stage": ["Page views", "Sessions", "Conversions", "New customers"],
@@ -581,7 +566,7 @@ elif page == "Acquisition & Conversion":
                           legend=dict(orientation="h", y=1.12))
         st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown("### CAC vs. LTV over time")
+    section_header("CAC vs. LTV over time")
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=km["month"], y=km["cac"], name="CAC", line=dict(color=RED)))
     fig.add_trace(go.Scatter(x=km["month"], y=km["ltv"], name="LTV", line=dict(color=GREEN)))
